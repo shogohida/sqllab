@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sqllab — live demo</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --border: #232936;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #5b8def;
+    --good: #3ecf8e;
+    --bad: #e0576b;
+    --warn: #e0b357;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { padding: 24px clamp(16px, 4vw, 48px) 16px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0 0 4px; font-size: 1.4rem; letter-spacing: -0.01em; }
+  header h1 code { color: var(--accent); }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; max-width: 78ch; }
+  header a { color: var(--accent); }
+  main {
+    padding: 20px clamp(16px, 4vw, 48px) 48px;
+    display: grid;
+    grid-template-columns: minmax(260px, 340px) 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .panel + .panel { margin-top: 16px; }
+  .panel h2 { margin: 0 0 10px; font-size: 0.95rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .scenario {
+    display: block; width: 100%; text-align: left;
+    background: transparent; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 0.85rem;
+  }
+  .scenario:hover, .scenario.active { border-color: var(--accent); background: rgba(91,141,239,0.08); }
+  .scenario .desc { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
+  .schema-table { margin-bottom: 10px; font-size: 0.82rem; }
+  .schema-table .tname { color: var(--accent); font-weight: 600; }
+  .schema-table .col { color: var(--muted); margin-left: 10px; }
+  textarea#sqlBox {
+    width: 100%; min-height: 90px; resize: vertical;
+    background: #0d1017; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem;
+  }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    background: var(--accent); color: #04101f; border: none; border-radius: 6px;
+    padding: 8px 14px; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.secondary:disabled:hover { border-color: var(--border); }
+  .hint { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
+  .plan-line { font-family: ui-monospace, monospace; font-size: 0.82rem; padding: 4px 8px; border-radius: 6px; margin-bottom: 4px; }
+  .plan-line.scan { background: rgba(224,87,107,0.12); color: var(--bad); }
+  .plan-line.search { background: rgba(62,207,142,0.12); color: var(--good); }
+  .plan-line.other { background: rgba(139,147,163,0.12); color: var(--muted); }
+  .stats { display: flex; gap: 16px; margin: 10px 0; font-size: 0.85rem; }
+  .stats b { color: var(--text); }
+  table.results { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 8px; display: block; overflow-x: auto; }
+  table.results th, table.results td { border-bottom: 1px solid var(--border); padding: 4px 8px; text-align: left; white-space: nowrap; }
+  table.results th { color: var(--muted); font-weight: 600; }
+  .log { max-height: 220px; overflow-y: auto; font-size: 0.8rem; }
+  .log-entry { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .log-entry .meta { color: var(--muted); margin-right: 6px; }
+  .log-entry.err { color: var(--bad); }
+  .log-entry.ok { color: var(--text); }
+  .ai-status { color: var(--muted); font-size: 0.8rem; margin-top: 8px; min-height: 1.2em; }
+  input#aiQuestion {
+    width: 100%; background: #0d1017; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 0.85rem; margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>sqllab — <code>live demo</code></h1>
+  <p>
+    A real embedded SQLite database, in your own private in-memory sandbox: run a
+    query unindexed, watch the query plan and timing, add the suggested index, rerun
+    the same query, and see the plan flip from a full scan to an index search. The
+    "Ask AI" panel turns a plain-English question into SQL entirely inside your
+    browser (WebLLM/WebGPU) — no server-side model, no API key, nothing sent
+    anywhere. See the <a href="https://github.com/shogohida/sqllab" target="_blank" rel="noopener">source</a>.
+  </p>
+</header>
+
+<main>
+  <section>
+    <div class="panel">
+      <h2>Scenarios</h2>
+      <div id="scenarioList"></div>
+      <p class="hint">Pick one, or write your own SELECT below.</p>
+    </div>
+    <div class="panel">
+      <h2>Schema</h2>
+      <div id="schemaBrowser"></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="panel">
+      <h2>Query</h2>
+      <div id="scenarioDesc" class="hint"></div>
+      <textarea id="sqlBox" spellcheck="false" placeholder="SELECT * FROM orders WHERE customer_id = 42"></textarea>
+      <div class="row">
+        <button id="runBtn">Run query</button>
+        <button id="addIndexBtn" class="secondary" disabled>Add suggested index</button>
+        <button id="resetBtn" class="secondary">Reset sandbox</button>
+      </div>
+
+      <div id="planBox"></div>
+      <div class="stats" id="statsBox"></div>
+      <div id="resultsBox"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Ask AI (runs entirely in your browser)</h2>
+      <div class="row">
+        <button id="loadModelBtn">Load AI model (~1GB, first time only)</button>
+      </div>
+      <input id="aiQuestion" type="text" placeholder="e.g. Show me all orders for customer 42, most recent first" disabled>
+      <div class="row">
+        <button id="askAiBtn" class="secondary" disabled>Ask AI → generate &amp; run SQL</button>
+      </div>
+      <div id="aiStatus" class="ai-status"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Activity</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

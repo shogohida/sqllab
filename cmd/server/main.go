@@ -15,6 +15,13 @@ import (
 	"sqllab/web"
 )
 
+// serveJapanese serves the Japanese frontend at the friendly /ja path; the
+// file itself lives at web/index.ja.html in the embedded FS so the plain
+// http.FileServer above can also reach it directly at /index.ja.html.
+func serveJapanese(w http.ResponseWriter, r *http.Request) {
+	http.ServeFileFS(w, r, web.Assets, "index.ja.html")
+}
+
 func main() {
 	tmpDir, err := os.MkdirTemp("", "sqllab-template")
 	if err != nil {
@@ -36,6 +43,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", api.New(store).Routes())
+	mux.HandleFunc("GET /ja", serveJapanese)
+	mux.HandleFunc("GET /ja/", serveJapanese)
 	mux.Handle("/", http.FileServer(http.FS(web.Assets)))
 
 	port := os.Getenv("PORT")

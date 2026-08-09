@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	sqllabdb "sqllab/internal/db"
@@ -80,6 +81,59 @@ func TestHandleQuery_RejectsDisallowedStatement(t *testing.T) {
 	}
 }
 
+func TestHandleSuggestIndex(t *testing.T) {
+	srv := httptest.NewServer(testHandler(t).Routes())
+	defer srv.Close()
+
+	postSuggest := func(sql string) (*http.Response, sqllabdb.IndexSuggestion) {
+		t.Helper()
+		body, _ := json.Marshal(suggestIndexRequest{SQL: sql})
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/suggest-index", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST /api/suggest-index: %v", err)
+		}
+		var out sqllabdb.IndexSuggestion
+		json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		return resp, out
+	}
+
+	resp, sugg := postSuggest("SELECT * FROM orders WHERE customer_id = 42 ORDER BY order_date DESC")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if sugg.SQL == "" {
+		t.Fatalf("expected a suggested index, got reason %q", sugg.Reason)
+	}
+
+	// Getting a suggestion must not itself create the index: a normal query
+	// against the same (cookie-bound) session should still show a scan.
+	cookies := resp.Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected a session cookie to be set")
+	}
+	respPlan, result := postQuery(t, srv, cookies, "EXPLAIN QUERY PLAN SELECT * FROM orders WHERE customer_id = 42 ORDER BY order_date DESC")
+	if respPlan.StatusCode != http.StatusOK {
+		t.Fatalf("EXPLAIN QUERY PLAN: expected 200, got %d", respPlan.StatusCode)
+	}
+	found := false
+	for _, line := range result.Plan {
+		if strings.HasPrefix(line, "SCAN") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the suggestion call to leave the session unindexed (a plain SCAN), got plan %v", result.Plan)
+	}
+
+	respBad, _ := postSuggest("CREATE INDEX idx ON orders(status)")
+	if respBad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a non-SELECT statement, got %d", respBad.StatusCode)
+	}
+}
+
 func TestHandleSchemaAndScenarios(t *testing.T) {
 	srv := httptest.NewServer(testHandler(t).Routes())
 	defer srv.Close()
@@ -90,8 +144,8 @@ func TestHandleSchemaAndScenarios(t *testing.T) {
 	}
 	var tables []sqllabdb.Table
 	json.NewDecoder(resp.Body).Decode(&tables)
-	if len(tables) != 4 {
-		t.Fatalf("expected 4 tables, got %d", len(tables))
+	if len(tables) != len(sqllabdb.Describe()) {
+		t.Fatalf("expected %d tables, got %d", len(sqllabdb.Describe()), len(tables))
 	}
 
 	resp2, err := http.Get(srv.URL + "/api/scenarios")

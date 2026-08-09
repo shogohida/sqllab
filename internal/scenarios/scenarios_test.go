@@ -14,8 +14,18 @@ func TestScenarios_PassTheGuard(t *testing.T) {
 		if _, _, err := sqllabdb.ValidateStatement(s.Query); err != nil {
 			t.Errorf("scenario %q: query rejected by guard: %v", s.ID, err)
 		}
-		if _, _, err := sqllabdb.ValidateStatement(s.SuggestedIndexSQL); err != nil {
-			t.Errorf("scenario %q: suggested index rejected by guard: %v", s.ID, err)
+		if s.SuggestedIndexSQL != "" {
+			if _, _, err := sqllabdb.ValidateStatement(s.SuggestedIndexSQL); err != nil {
+				t.Errorf("scenario %q: suggested index rejected by guard: %v", s.ID, err)
+			}
+		}
+		if s.RewrittenQuery != "" {
+			if _, _, err := sqllabdb.ValidateStatement(s.RewrittenQuery); err != nil {
+				t.Errorf("scenario %q: rewritten query rejected by guard: %v", s.ID, err)
+			}
+		}
+		if s.SuggestedIndexSQL == "" && s.RewrittenQuery == "" {
+			t.Errorf("scenario %q: has neither a suggested index nor a rewritten query", s.ID)
 		}
 	}
 }

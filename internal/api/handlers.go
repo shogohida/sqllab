@@ -28,6 +28,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /api/schema", h.handleSchema)
 	mux.HandleFunc("GET /api/scenarios", h.handleScenarios)
 	mux.HandleFunc("POST /api/query", h.handleQuery)
+	mux.HandleFunc("POST /api/suggest-index", h.handleSuggestIndex)
 	return mux
 }
 
@@ -54,14 +55,8 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := h.sessionFor(w, r)
-	if err != nil {
-		if errors.Is(err, session.ErrAtCapacity) {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
-			return
-		}
-		log.Printf("session error: %v", err)
-		writeError(w, http.StatusInternalServerError, "could not create a session")
+	sess, ok := h.sessionOrWriteError(w, r)
+	if !ok {
 		return
 	}
 
@@ -71,6 +66,51 @@ func (h *Handler) handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type suggestIndexRequest struct {
+	SQL string `json:"sql"`
+}
+
+// handleSuggestIndex analyzes an arbitrary SELECT — hand-typed, AI-generated,
+// or a scenario's query — and reports an index that empirically changes its
+// plan, if one exists. Unlike handleQuery, this never mutates the caller's
+// session database: sqllabdb.SuggestIndex only ever tries candidates inside
+// a transaction it rolls back.
+func (h *Handler) handleSuggestIndex(w http.ResponseWriter, r *http.Request) {
+	var req suggestIndexRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	sess, ok := h.sessionOrWriteError(w, r)
+	if !ok {
+		return
+	}
+
+	suggestion, err := sqllabdb.SuggestIndex(r.Context(), sess.DB, req.SQL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, suggestion)
+}
+
+// sessionOrWriteError resolves the caller's session, writing the
+// appropriate error response and returning ok=false if that fails.
+func (h *Handler) sessionOrWriteError(w http.ResponseWriter, r *http.Request) (*session.Session, bool) {
+	sess, err := h.sessionFor(w, r)
+	if err != nil {
+		if errors.Is(err, session.ErrAtCapacity) {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return nil, false
+		}
+		log.Printf("session error: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not create a session")
+		return nil, false
+	}
+	return sess, true
 }
 
 // sessionFor returns the caller's existing session (via cookie) or

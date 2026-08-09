@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -11,6 +12,11 @@ const (
 	queryTimeout = 3 * time.Second
 	maxRows      = 500
 )
+
+// explainPrefixRe strips a hand-typed "EXPLAIN QUERY PLAN" prefix so it can
+// be re-added exactly once by explainPlan — without this, a KindExplain
+// statement's own prefix would double up with explainPlan's.
+var explainPrefixRe = regexp.MustCompile(`(?i)^EXPLAIN\s+QUERY\s+PLAN\s+`)
 
 // Result is what every /api/query response carries back to the browser,
 // whether the statement was a read query or an index DDL action.
@@ -41,7 +47,7 @@ func Execute(ctx context.Context, sqlDB *sql.DB, stmt string) (*Result, error) {
 	case KindSelect:
 		return runSelect(ctx, sqlDB, clean)
 	case KindExplain:
-		plan, elapsed, err := explainPlan(ctx, sqlDB, clean)
+		plan, elapsed, err := explainPlan(ctx, sqlDB, explainPrefixRe.ReplaceAllString(clean, ""))
 		if err != nil {
 			return nil, err
 		}
@@ -110,9 +116,16 @@ func runSelect(ctx context.Context, sqlDB *sql.DB, clean string) (*Result, error
 	}, nil
 }
 
-func explainPlan(ctx context.Context, sqlDB *sql.DB, selectSQL string) ([]string, float64, error) {
+// queryer is satisfied by both *sql.DB and *sql.Tx, so explainPlan can run
+// either directly against a session's connection or inside a trial
+// transaction (see suggest.go) without duplicating this logic.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func explainPlan(ctx context.Context, q queryer, selectSQL string) ([]string, float64, error) {
 	start := time.Now()
-	rows, err := sqlDB.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectSQL)
+	rows, err := q.QueryContext(ctx, "EXPLAIN QUERY PLAN "+selectSQL)
 	if err != nil {
 		return nil, 0, err
 	}

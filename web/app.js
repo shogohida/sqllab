@@ -7,6 +7,7 @@ const sqlBox = document.getElementById('sqlBox');
 const runBtn = document.getElementById('runBtn');
 const addIndexBtn = document.getElementById('addIndexBtn');
 const resetBtn = document.getElementById('resetBtn');
+const fixExplanation = document.getElementById('fixExplanation');
 const planBox = document.getElementById('planBox');
 const statsBox = document.getElementById('statsBox');
 const resultsBox = document.getElementById('resultsBox');
@@ -24,6 +25,12 @@ let scenarios = [];
 let activeScenario = null;
 let schemaTables = [];
 let webllmEngine = null;
+
+// Outside of a selected scenario, the fix button is driven by a live call
+// to /api/suggest-index against whatever SQL was actually last run, rather
+// than a curated static suggestion.
+let dynamicSuggestion = null;
+let lastRunSQL = '';
 
 function log(kind, text) {
   const entry = document.createElement('div');
@@ -66,14 +73,47 @@ function renderScenarios(list) {
   });
 }
 
+function fixButtonLabel(s) {
+  if (s.rewritten_query) {
+    return s.suggested_index_sql
+      ? 'Apply fix (index + rewritten query)'
+      : 'Apply fix (rewritten query)';
+  }
+  return `Add suggested index (${s.suggested_index_sql})`;
+}
+
 function selectScenario(s, el) {
   document.querySelectorAll('.scenario').forEach(b => b.classList.remove('active'));
   el.classList.add('active');
   activeScenario = s;
+  dynamicSuggestion = null;
   sqlBox.value = s.query;
   scenarioDesc.textContent = s.description;
+  fixExplanation.textContent = s.fix_explanation || '';
   addIndexBtn.disabled = false;
-  addIndexBtn.textContent = `Add suggested index (${s.suggested_index_sql})`;
+  addIndexBtn.textContent = fixButtonLabel(s);
+}
+
+// Analyzes the query that was actually just run (hand-typed or
+// AI-generated) via /api/suggest-index and drives the fix button off the
+// result — this is what lets "Apply fix" work outside the canned
+// scenarios, for any SELECT the visitor throws at it.
+async function refreshSuggestion(sql) {
+  dynamicSuggestion = null;
+  try {
+    dynamicSuggestion = await api('/api/suggest-index', { body: { sql } });
+  } catch (e) {
+    dynamicSuggestion = { reason: e.message };
+  }
+
+  if (dynamicSuggestion.suggested_index_sql) {
+    addIndexBtn.disabled = false;
+    addIndexBtn.textContent = `Add suggested index (${dynamicSuggestion.suggested_index_sql})`;
+  } else {
+    addIndexBtn.disabled = true;
+    addIndexBtn.textContent = 'Add suggested index';
+  }
+  fixExplanation.textContent = dynamicSuggestion.reason || '';
 }
 
 function planLineClass(line) {
@@ -114,20 +154,46 @@ async function runSQL(sql, { logLabel } = {}) {
   }
 }
 
-runBtn.addEventListener('click', () => {
+// Editing a scenario's query by hand breaks its tie to the curated static
+// suggestion — from then on the fix button is driven by a live analysis of
+// whatever is actually in the box.
+sqlBox.addEventListener('input', () => {
+  if (activeScenario && sqlBox.value.trim() !== activeScenario.query.trim()) {
+    activeScenario = null;
+    dynamicSuggestion = null;
+    addIndexBtn.disabled = true;
+    addIndexBtn.textContent = 'Add suggested index';
+    fixExplanation.textContent = '';
+  }
+});
+
+runBtn.addEventListener('click', async () => {
   const sql = sqlBox.value.trim();
   if (!sql) return;
-  runSQL(sql, { logLabel: 'run' });
+  const result = await runSQL(sql, { logLabel: 'run' }).catch(() => null);
+  if (result && result.kind === 'select' && !activeScenario) {
+    lastRunSQL = sql;
+    await refreshSuggestion(sql);
+  }
 });
 
 addIndexBtn.addEventListener('click', async () => {
-  if (!activeScenario) return;
   try {
-    await runSQL(activeScenario.suggested_index_sql, { logLabel: 'add index' });
-    addIndexBtn.disabled = true;
-    // Immediately rerun the same query so the before/after is visible without
-    // an extra click.
-    await runSQL(activeScenario.query, { logLabel: 're-run after index' });
+    if (activeScenario) {
+      if (activeScenario.suggested_index_sql) {
+        await runSQL(activeScenario.suggested_index_sql, { logLabel: 'add index' });
+      }
+      addIndexBtn.disabled = true;
+      // Immediately rerun the (possibly rewritten) query so the before/after
+      // is visible without an extra click.
+      const finalQuery = activeScenario.rewritten_query || activeScenario.query;
+      sqlBox.value = finalQuery;
+      await runSQL(finalQuery, { logLabel: activeScenario.rewritten_query ? 're-run rewritten query' : 're-run after index' });
+    } else if (dynamicSuggestion && dynamicSuggestion.suggested_index_sql) {
+      await runSQL(dynamicSuggestion.suggested_index_sql, { logLabel: 'add index' });
+      addIndexBtn.disabled = true;
+      await runSQL(lastRunSQL, { logLabel: 're-run after index' });
+    }
   } catch {
     // runSQL already logged the failure.
   }
@@ -138,6 +204,17 @@ resetBtn.addEventListener('click', async () => {
   planBox.innerHTML = '';
   statsBox.innerHTML = '';
   resultsBox.innerHTML = '';
+  dynamicSuggestion = null;
+  lastRunSQL = '';
+  if (activeScenario) {
+    sqlBox.value = activeScenario.query;
+    addIndexBtn.disabled = false;
+    addIndexBtn.textContent = fixButtonLabel(activeScenario);
+  } else {
+    addIndexBtn.disabled = true;
+    addIndexBtn.textContent = 'Add suggested index';
+    fixExplanation.textContent = '';
+  }
   log('ok', 'sandbox reset — next query starts a fresh session');
 });
 
@@ -222,10 +299,16 @@ askAiBtn.addEventListener('click', async () => {
       temperature: 0.1,
     });
     const sql = extractSQL(completion.choices[0].message.content);
+    activeScenario = null;
+    document.querySelectorAll('.scenario').forEach(b => b.classList.remove('active'));
     sqlBox.value = sql;
     aiStatus.textContent = `Generated: ${sql}`;
     log('ok', `AI generated SQL for "${question}"`);
-    await runSQL(sql, { logLabel: 'AI-generated query' });
+    const result = await runSQL(sql, { logLabel: 'AI-generated query' });
+    if (result && result.kind === 'select') {
+      lastRunSQL = sql;
+      await refreshSuggestion(sql);
+    }
   } catch (e) {
     aiStatus.textContent = `Generation failed: ${e.message}`;
     log('err', `AI generation failed: ${e.message}`);

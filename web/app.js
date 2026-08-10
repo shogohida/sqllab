@@ -75,11 +75,14 @@ function renderScenarios(list) {
 
 function fixButtonLabel(s) {
   if (s.rewritten_query) {
-    return s.suggested_index_sql
+    return s.suggested_index_sql?.length
       ? 'Apply fix (index + rewritten query)'
       : 'Apply fix (rewritten query)';
   }
-  return `Add suggested index (${s.suggested_index_sql})`;
+  const n = s.suggested_index_sql?.length || 0;
+  return n > 1
+    ? `Add ${n} suggested indexes (${s.suggested_index_sql.join(' + ')})`
+    : `Add suggested index (${s.suggested_index_sql[0]})`;
 }
 
 function selectScenario(s, el) {
@@ -180,8 +183,8 @@ runBtn.addEventListener('click', async () => {
 addIndexBtn.addEventListener('click', async () => {
   try {
     if (activeScenario) {
-      if (activeScenario.suggested_index_sql) {
-        await runSQL(activeScenario.suggested_index_sql, { logLabel: 'add index' });
+      for (const idxSQL of activeScenario.suggested_index_sql || []) {
+        await runSQL(idxSQL, { logLabel: 'add index' });
       }
       addIndexBtn.disabled = true;
       // Immediately rerun the (possibly rewritten) query so the before/after

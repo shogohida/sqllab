@@ -543,6 +543,19 @@ func roundCents(v float64) float64 {
 // in-process copy on the order of a second at this dataset's size, versus
 // re-running the full row-by-row generator per visitor.
 func Seed(db *sql.DB, templatePath string) error {
+	// SQLite's query planner silently builds a throwaway index at runtime
+	// for a join/EXISTS's inner table whenever it judges one worthwhile
+	// (PRAGMA automatic_index, default ON). Left on, that makes an
+	// unindexed join look just as fast as an indexed one for a single
+	// demo run, which defeats both the canned scenarios' before/after
+	// story and the dynamic suggest-index feature's ability to even
+	// detect the scan (its plan line reads SEARCH ... AUTOMATIC COVERING
+	// INDEX, not SCAN). Turning it off makes "no real index" behave like
+	// it would under repeated production load, where nobody wants SQLite
+	// rebuilding a temp index on every single query execution anyway.
+	if _, err := db.Exec("PRAGMA automatic_index = OFF"); err != nil {
+		return fmt.Errorf("disable automatic_index: %w", err)
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}

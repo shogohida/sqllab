@@ -72,6 +72,30 @@ const SCENARIO_JA = {
     askAiPrompt: '日付順（新しい順）で最初の4万件を飛ばして、次の20件の注文を見せて',
     fixExplanation: 'インデックスによって並び替え自体はほぼ無料になりますが、OFFSETは読み飛ばす4万行を一つずつ数える必要があり、この部分のコストはLIMIT/OFFSETの仕組みでは避けられません。実運用のページネーションは、最後に見た行を覚えておいてそこから先を探す「キーセットページネーション」を使います。',
   },
+  'product-reviews': {
+    title: '商品レビュー（新しい順）',
+    description: '商品ページが、その商品のレビューを新しい順にすべて読み込み、あわせて商品名も表示します——ファクトテーブルをディメンションテーブルに結合して人が読める名前を添える典型例です。',
+    askAiPrompt: '商品42番のレビューをすべて、商品名つきで新しい順に見せて',
+    fixExplanation: '（product_id, created_at）の複合インデックスにより、SQLiteはこの商品のレビューだけをすでに新しい順の状態で直接たどれます——productsへのJOINはどちらにせよ主キーの単純ルックアップなので、ボトルネックではありませんでした。',
+  },
+  'failed-payments-followup': {
+    title: '要フォローの失敗決済',
+    description: 'サポート担当者が、失敗した決済を顧客の連絡先つきで新しい順にすべて取得します——paymentsというファクトテーブルをordersを経由してcustomersまで結合します。',
+    askAiPrompt: '失敗した決済をすべて、顧客の名前とメールアドレスつきで新しい順に見せて',
+    fixExplanation: '（status, paid_at）の複合インデックスにより、paymentsのスキャン範囲を失敗した決済だけに絞り込め、しかもすでに日付順です。その後に続く2つのJOIN（payments.order_id→orders.id、orders.customer_id→customers.id）はどちらも安価な主キールックアップなので、ファクトテーブルの絞り込み列にインデックスを張ることがすべてです。',
+  },
+  'warehouse-in-transit-shipments': {
+    title: '特定倉庫からの配送中の出荷',
+    description: '倉庫のオペレーション担当者が、ある倉庫から現在配送中のすべての出荷を、担当者名つきで新しい順に取得します。',
+    askAiPrompt: '倉庫3番からの配送中の出荷をすべて、担当者名つきで新しい順に見せて',
+    fixExplanation: '（warehouse_id, status, shipped_at）の複合インデックスにより、shipmentsのスキャン範囲をこの倉庫の配送中の行だけに絞り込め、しかもすでに新しい順です。担当者名を取得するemployeesへのJOINは安価な主キールックアップです。',
+  },
+  'orders-needing-review': {
+    title: '返品保留中かつ決済失敗の完了済み注文',
+    description: 'リスクレビューのキューが、返品が保留中であり、かつ決済が失敗している完了済み注文を検出します——同じ注文に対する、2つの異なるテーブル上の独立した2つの警告フラグです。',
+    askAiPrompt: '返品が保留中かつ決済が失敗している完了済み注文を、新しい順に見せて',
+    fixExplanation: 'このシナリオは本当に2つのインデックスが両方必要です——それぞれ独立した2つのサブクエリを解決するもので、単一の共通ボトルネックではありません。各EXISTS句は、候補となる注文1件ごとに自分のテーブルを毎回スキャンします。returns(order_id, status)にインデックスがなければ、返品保留チェックだけで注文ごとにreturnsの全件スキャンが発生し、payments(order_id, status)にインデックスがなければ、決済失敗チェックだけで注文ごとにpaymentsの全件スキャンが発生します。どちらか一方だけを追加しても、もう片方のサブクエリはスキャンしたままです——両方揃って初めて、注文を一件ずつ這うように調べるのが止まります。',
+  },
 };
 
 function ja(s) {
@@ -127,11 +151,14 @@ function renderScenarios(list) {
 
 function fixButtonLabel(s) {
   if (s.rewritten_query) {
-    return s.suggested_index_sql
+    return s.suggested_index_sql?.length
       ? '修正を適用（インデックス＋クエリ書き換え）'
       : '修正を適用（クエリ書き換え）';
   }
-  return `推奨インデックスを追加（${s.suggested_index_sql}）`;
+  const n = s.suggested_index_sql?.length || 0;
+  return n > 1
+    ? `推奨インデックスを${n}件追加（${s.suggested_index_sql.join(' + ')}）`
+    : `推奨インデックスを追加（${s.suggested_index_sql[0]}）`;
 }
 
 function selectScenario(s, el) {
@@ -230,8 +257,8 @@ runBtn.addEventListener('click', async () => {
 addIndexBtn.addEventListener('click', async () => {
   try {
     if (activeScenario) {
-      if (activeScenario.suggested_index_sql) {
-        await runSQL(activeScenario.suggested_index_sql, { logLabel: 'インデックス追加' });
+      for (const idxSQL of activeScenario.suggested_index_sql || []) {
+        await runSQL(idxSQL, { logLabel: 'インデックス追加' });
       }
       addIndexBtn.disabled = true;
       // Immediately rerun the (possibly rewritten) query so the before/after

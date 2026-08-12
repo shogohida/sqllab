@@ -95,6 +95,22 @@ slow at this scale — not sheer row count. No exact millisecond numbers are
 promised in the UI copy; shared-CPU performance varies, and showing the
 relative before/after is the defensible framing.
 
+**SQLite, even though the original claim was MySQL-specific.** The résumé
+line this project reproduces is literally about MySQL index optimization,
+and MySQL's `EXPLAIN`/`EXPLAIN ANALYZE` (8.0.18+) genuinely shows more than
+SQLite's `EXPLAIN QUERY PLAN` does: actual per-step row counts and timing,
+`key_len` (how much of a composite index was actually used), a `filtered`
+estimate, and an `Extra` column (`Using filesort`, `Using temporary`,
+`Using index condition`) with no SQLite equivalent. That gap is real and
+left visible rather than papered over — it's not solvable without giving
+up the property the rest of this section depends on: an embeddable,
+single-process database that a free web service can seed and throw away
+per visitor in under 100ms with zero infrastructure cost. MySQL's
+client-server model doesn't have that property at any price point (see
+the live demo's hosting constraints above). What *does* carry over
+one-to-one is the mechanism itself — a missing composite index turning a
+scan into a search is the same fix, and the same reasoning, in InnoDB.
+
 ## Running the tests
 
 ```bash
